@@ -1,11 +1,443 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>My First Vibecoding</title>
+		<style>
+			body {
+				margin: 0;
+				overflow: hidden;
+				font-family: Arial, sans-serif;
+			}
+			canvas {
+				display: block;
+				width: 100%;
+				height: 100vh;
+			}
+			#info {
+				position: absolute;
+				top: 10px;
+				left: 10px;
+				color: white;
+				background-color: rgba(0, 0, 0, 0.5);
+				padding: 10px;
+				border-radius: 5px;
+			}
+			#controls {
+				position: absolute;
+				bottom: 10px;
+				left: 10px;
+				color: white;
+				background-color: rgba(0, 0, 0, 0.5);
+				padding: 10px;
+				border-radius: 5px;
+			}
+		</style>
 	</head>
 	<body>
-		<h1>Hello</h1>
+		<canvas id="gameCanvas"></canvas>
+		<div id="info">
+			<h2>3D 상자 게임</h2>
+			<p>획득한 점수: <span id="score">0</span></p>
+		</div>
+		<div id="controls">
+			<h3>조작법:</h3>
+			<p>W, A, S, D: 이동</p>
+			<p>스페이스바: 점프</p>
+			<p>마우스: 시점 이동</p>
+		</div>
+
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+		<script>
+			// 게임 초기화
+			let scene, camera, renderer, player;
+			let moveForward = false;
+			let moveBackward = false;
+			let moveLeft = false;
+			let moveRight = false;
+			let canJump = true;
+
+			// 물리 관련 변수
+			const velocity = new THREE.Vector3();
+			const direction = new THREE.Vector3();
+			let prevTime = performance.now();
+
+			// 충돌 감지를 위한 레이캐스터
+			const raycaster = new THREE.Raycaster();
+
+			// 장애물과 수집품
+			const boxes = [];
+			const collectibles = [];
+			let score = 0;
+
+			// 초기화 함수
+			function init() {
+				// 씬 생성
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color(0x87ceeb); // 하늘색 배경
+
+				// 카메라 설정
+				camera = new THREE.PerspectiveCamera(
+					75,
+					window.innerWidth / window.innerHeight,
+					0.1,
+					1000
+				);
+				camera.position.y = 1.6; // 플레이어 높이
+
+				// 렌더러 설정
+				renderer = new THREE.WebGLRenderer({
+					canvas: document.getElementById("gameCanvas"),
+					antialias: true,
+				});
+				renderer.setSize(window.innerWidth, window.innerHeight);
+				renderer.shadowMap.enabled = true;
+
+				// 조명 추가
+				const ambientLight = new THREE.AmbientLight(0x404040);
+				scene.add(ambientLight);
+
+				const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+				directionalLight.position.set(1, 3, 2);
+				directionalLight.castShadow = true;
+				scene.add(directionalLight);
+
+				// 바닥 생성
+				const floorGeometry = new THREE.PlaneGeometry(100, 100);
+				const floorMaterial = new THREE.MeshStandardMaterial({
+					color: 0x3a7e3a,
+					roughness: 1.0,
+				});
+				const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+				floor.rotation.x = -Math.PI / 2; // 바닥이 수평이 되도록 회전
+				floor.receiveShadow = true;
+				scene.add(floor);
+
+				// 플레이어 생성
+				const playerGeometry = new THREE.BoxGeometry(0.5, 1.6, 0.5);
+				const playerMaterial = new THREE.MeshStandardMaterial({
+					color: 0x1e90ff,
+				});
+				player = new THREE.Mesh(playerGeometry, playerMaterial);
+				player.position.y = 0.8; // 플레이어의 절반 높이
+				player.castShadow = true;
+				scene.add(player);
+
+				// 카메라를 플레이어에 추가
+				player.add(camera);
+
+				// 랜덤 상자 생성
+				createRandomBoxes(20);
+
+				// 수집품 생성
+				createCollectibles(10);
+
+				// 이벤트 리스너 등록
+				document.addEventListener("keydown", onKeyDown, false);
+				document.addEventListener("keyup", onKeyUp, false);
+				document.addEventListener("mousemove", onMouseMove, false);
+
+				// 마우스 포인터 잠금
+				document.body.addEventListener("click", function () {
+					document.body.requestPointerLock();
+				});
+
+				// 애니메이션 시작
+				animate();
+			}
+
+			// 랜덤 상자 생성 함수
+			function createRandomBoxes(count) {
+				const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+
+				for (let i = 0; i < count; i++) {
+					// 랜덤 위치 생성 (바닥 범위 내)
+					const x = Math.random() * 40 - 20;
+					const z = Math.random() * 40 - 20;
+					const height = Math.random() * 3 + 0.5; // 0.5~3.5 사이 높이
+
+					const boxMaterial = new THREE.MeshStandardMaterial({
+						color: Math.random() * 0xffffff,
+					});
+
+					const box = new THREE.Mesh(boxGeometry, boxMaterial);
+					box.position.set(x, height / 2, z);
+					box.scale.set(1, height, 1);
+					box.castShadow = true;
+					box.receiveShadow = true;
+
+					// 충돌 감지를 위한 경계 상자
+					box.bbox = new THREE.Box3().setFromObject(box);
+
+					scene.add(box);
+					boxes.push(box);
+				}
+			}
+
+			// 수집품 생성 함수
+			function createCollectibles(count) {
+				const collectibleGeometry = new THREE.SphereGeometry(0.3, 16, 16);
+				const collectibleMaterial = new THREE.MeshStandardMaterial({
+					color: 0xffff00,
+					emissive: 0xffff00,
+					emissiveIntensity: 0.5,
+				});
+
+				for (let i = 0; i < count; i++) {
+					// 랜덤 위치 생성 (바닥 범위 내)
+					const x = Math.random() * 40 - 20;
+					const z = Math.random() * 40 - 20;
+
+					const collectible = new THREE.Mesh(
+						collectibleGeometry,
+						collectibleMaterial
+					);
+					collectible.position.set(x, 0.5, z);
+					collectible.castShadow = true;
+
+					// 충돌 감지를 위한 경계 상자
+					collectible.bbox = new THREE.Box3().setFromObject(collectible);
+					collectible.collected = false;
+
+					scene.add(collectible);
+					collectibles.push(collectible);
+				}
+			}
+
+			// 키보드 이벤트 처리 함수
+			function onKeyDown(event) {
+				switch (event.code) {
+					case "KeyW":
+						moveForward = true;
+						break;
+					case "KeyA":
+						moveLeft = true;
+						break;
+					case "KeyS":
+						moveBackward = true;
+						break;
+					case "KeyD":
+						moveRight = true;
+						break;
+					case "Space":
+						if (canJump) {
+							velocity.y = 5;
+							canJump = false;
+						}
+						break;
+				}
+			}
+
+			function onKeyUp(event) {
+				switch (event.code) {
+					case "KeyW":
+						moveForward = false;
+						break;
+					case "KeyA":
+						moveLeft = false;
+						break;
+					case "KeyS":
+						moveBackward = false;
+						break;
+					case "KeyD":
+						moveRight = false;
+						break;
+				}
+			}
+
+			// 마우스 이동 처리 함수
+			function onMouseMove(event) {
+				if (document.pointerLockElement === document.body) {
+					// 마우스 감도 조절
+					const sensitivity = 0.002;
+
+					// 플레이어 회전
+					player.rotation.y -= event.movementX * sensitivity;
+
+					// 카메라 상하 회전 (제한 있음)
+					const verticalLook = event.movementY * sensitivity;
+					const currentRotationX = camera.rotation.x;
+					const newRotationX = currentRotationX + verticalLook;
+
+					// 카메라 상하 회전 제한 (-Math.PI/3 ~ Math.PI/3)
+					if (newRotationX < Math.PI / 3 && newRotationX > -Math.PI / 3) {
+						camera.rotation.x = newRotationX;
+					}
+				}
+			}
+
+			// 애니메이션 함수
+			function animate() {
+				requestAnimationFrame(animate);
+
+				const time = performance.now();
+				const delta = (time - prevTime) / 1000; // 시간 차이(초)
+
+				// 중력 적용
+				velocity.y -= 9.8 * delta; // 중력 가속도
+
+				// 방향 계산
+				direction.z = Number(moveForward) - Number(moveBackward);
+				direction.x = Number(moveRight) - Number(moveLeft);
+				direction.normalize(); // 대각선 이동 시 속도 정규화
+
+				// 이동 속도 설정
+				const moveSpeed = 5.0;
+
+				// 플레이어 이동
+				if (moveForward || moveBackward) {
+					velocity.z = direction.z * moveSpeed * delta;
+				}
+				if (moveLeft || moveRight) {
+					velocity.x = direction.x * moveSpeed * delta;
+				}
+
+				// 플레이어 방향으로 이동 벡터 변환
+				const moveVector = new THREE.Vector3(velocity.x, 0, velocity.z);
+				moveVector.applyAxisAngle(
+					new THREE.Vector3(0, 1, 0),
+					player.rotation.y
+				);
+
+				// 플레이어 위치 업데이트 (충돌 감지 전)
+				const newPosition = player.position.clone();
+				newPosition.x += moveVector.x;
+				newPosition.z += moveVector.z;
+				newPosition.y += velocity.y * delta;
+
+				// 바닥 충돌 감지
+				if (newPosition.y < 0.8) {
+					// 플레이어 높이의 절반
+					newPosition.y = 0.8;
+					velocity.y = 0;
+					canJump = true;
+				}
+
+				// 상자와의 충돌 감지
+				let hasCollision = false;
+				const playerBoundingBox = new THREE.Box3().setFromObject(player);
+
+				// 새 위치에서의 플레이어 경계 상자
+				const newPlayerBBox = new THREE.Box3();
+				const playerSize = new THREE.Vector3();
+				playerBoundingBox.getSize(playerSize);
+
+				newPlayerBBox.min.set(
+					newPosition.x - playerSize.x / 2,
+					newPosition.y - playerSize.y / 2,
+					newPosition.z - playerSize.z / 2
+				);
+				newPlayerBBox.max.set(
+					newPosition.x + playerSize.x / 2,
+					newPosition.y + playerSize.y / 2,
+					newPosition.z + playerSize.z / 2
+				);
+
+				// 수평 이동 충돌 감지 (X, Z 축)
+				const horizontalPosition = player.position.clone();
+				horizontalPosition.x = newPosition.x;
+				horizontalPosition.z = newPosition.z;
+
+				for (const box of boxes) {
+					const boxBoundingBox = box.bbox.clone();
+
+					const horizontalPlayerBBox = new THREE.Box3();
+					horizontalPlayerBBox.min.set(
+						horizontalPosition.x - playerSize.x / 2,
+						player.position.y - playerSize.y / 2,
+						horizontalPosition.z - playerSize.z / 2
+					);
+					horizontalPlayerBBox.max.set(
+						horizontalPosition.x + playerSize.x / 2,
+						player.position.y + playerSize.y / 2,
+						horizontalPosition.z + playerSize.z / 2
+					);
+
+					if (horizontalPlayerBBox.intersectsBox(boxBoundingBox)) {
+						// 충돌 발생, 수평 이동 취소
+						newPosition.x = player.position.x;
+						newPosition.z = player.position.z;
+						break;
+					}
+				}
+
+				// 수직 이동 충돌 감지 (Y 축)
+				const verticalPosition = player.position.clone();
+				verticalPosition.y = newPosition.y;
+
+				for (const box of boxes) {
+					const boxBoundingBox = box.bbox.clone();
+
+					const verticalPlayerBBox = new THREE.Box3();
+					verticalPlayerBBox.min.set(
+						player.position.x - playerSize.x / 2,
+						verticalPosition.y - playerSize.y / 2,
+						player.position.z - playerSize.z / 2
+					);
+					verticalPlayerBBox.max.set(
+						player.position.x + playerSize.x / 2,
+						verticalPosition.y + playerSize.y / 2,
+						player.position.z + playerSize.z / 2
+					);
+
+					if (verticalPlayerBBox.intersectsBox(boxBoundingBox)) {
+						// 충돌 발생, 수직 이동 취소
+						if (velocity.y < 0) {
+							// 아래로 떨어지는 경우 (바닥 충돌)
+							newPosition.y = player.position.y;
+							velocity.y = 0;
+							canJump = true;
+						} else {
+							// 위로 올라가는 경우 (천장 충돌)
+							newPosition.y = player.position.y;
+							velocity.y = 0;
+						}
+						break;
+					}
+				}
+
+				// 최종 위치 적용
+				player.position.copy(newPosition);
+
+				// 수집품 충돌 감지 및 수집
+				const playerBBox = new THREE.Box3().setFromObject(player);
+				for (const collectible of collectibles) {
+					if (
+						!collectible.collected &&
+						playerBBox.intersectsBox(collectible.bbox)
+					) {
+						collectible.collected = true;
+						collectible.visible = false;
+						score += 10;
+						document.getElementById("score").textContent = score;
+					}
+				}
+
+				// 아이템 회전 애니메이션
+				collectibles.forEach((collectible) => {
+					if (!collectible.collected) {
+						collectible.rotation.y += 0.02;
+						collectible.position.y = 0.5 + Math.sin(time * 0.003) * 0.2;
+					}
+				});
+
+				// 시간 업데이트
+				prevTime = time;
+
+				// 렌더링
+				renderer.render(scene, camera);
+			}
+
+			// 창 크기 조정 이벤트 처리
+			window.addEventListener("resize", function () {
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize(window.innerWidth, window.innerHeight);
+			});
+
+			// 게임 시작
+			init();
+		</script>
 	</body>
 </html>
